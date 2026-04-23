@@ -165,16 +165,15 @@ function norm(v){
 function score(a,b){
   let s=0;
 
-  // rodné číslo = silná shoda
-  if(norm(a[3]) && norm(a[3])===norm(b[3])) s+=3;
-
-  if(norm(a[1])===norm(b[1])) s++; // jméno
-  if(norm(a[2])===norm(b[2])) s++; // příjmení
-  if(norm(a[4])===norm(b[4])) s++; // telefon
-  if(norm(a[5])===norm(b[5])) s++; // email
+  if(norm(a[1])===norm(b[1])) s++;
+  if(norm(a[2])===norm(b[2])) s++;
+  if(norm(a[3])===norm(b[3])) s++;
+  if(norm(a[4])===norm(b[4])) s++;
+  if(norm(a[5])===norm(b[5])) s++;
 
   return s;
 }
+
 
 function find(x,parent){
   if(parent[x]!==x) parent[x]=find(parent[x],parent);
@@ -195,7 +194,7 @@ function mergeGroups(data){
 
   for(let i=0;i<n;i++){
     for(let j=i+1;j<n;j++){
-      if(score(data[i],data[j])>=4){
+      if(score(data[i],data[j])>=3){
         union(i,j,parent);
       }
     }
