@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <title>sloučení duplicit (Excel)</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+  <style>
+    body{
+      margin:0;
+      font-family: Arial, sans-serif;
+      background: linear-gradient(135deg,#0f172a,#1e293b);
+      color:#fff;
+      min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+
+    .box{
+      width:100%;
+      max-width:900px;
+      background:#0b1220;
+      border:1px solid rgba(255,255,255,0.08);
+      border-radius:16px;
+      padding:28px;
+      box-shadow:0 20px 60px rgba(0,0,0,0.5);
+    }
+
+    h2{ margin-top:0; }
+
+    p{ color:#cbd5e1; font-size:14px; }
+
+    .upload{
+      margin-top:16px;
+      padding:30px;
+      border:2px dashed rgba(255,255,255,0.2);
+      border-radius:12px;
+      text-align:center;
+      background:rgba(255,255,255,0.02);
+      cursor:pointer;
+      transition:0.2s;
+    }
+
+    .upload:hover{
+      border-color:#38bdf8;
+      background:rgba(56,189,248,0.08);
+    }
+
+    .upload.success{
+      border-color:#22c55e;
+      background:rgba(34,197,94,0.12);
+    }
+
+    input[type="file"]{ display:none; }
+
+    button{
+      margin-top:16px;
+      width:100%;
+      padding:12px;
+      border:none;
+      border-radius:10px;
+      background:linear-gradient(90deg,#38bdf8,#6366f1);
+      color:white;
+      font-weight:bold;
+      cursor:pointer;
+    }
+
+    a{
+      display:inline-block;
+      margin-top:16px;
+      padding:10px 14px;
+      background:#10b981;
+      color:white;
+      text-decoration:none;
+      border-radius:8px;
+    }
+
+    #status{
+      margin-top:12px;
+      font-size:13px;
+      color:#94a3b8;
+    }
+
+    #status.success{
+      color:#22c55e;
+      font-weight:bold;
+    }
+
+    .filename{
+      margin-top:12px;
+      width:100%;
+      padding:12px;
+      border-radius:10px;
+      border:1px solid rgba(255,255,255,0.2);
+      background:#0f172a;
+      color:white;
+      outline:none;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="box">
+  <h2>sloučení duplicit</h2>
+  <p></p>
+
+  <div class="upload" id="dropZone">
+    <p id="uploadText"><b>Klikni nebo přetáhni Excel</b></p>
+    <p style="font-size:12px;opacity:0.7">Soubor se nahraje automaticky</p>
+    <input type="file" id="fileInput" accept=".xlsx,.csv,.txt,.xls">
+  </div>
+
+  <div id="status"></div>
+
+  <button onclick="processFile()">Zpracovat Excel</button>
+
+  <a id="downloadLink" style="display:none"></a>
+
+  <!-- NÁZEV SOUBORU -->
+  <input class="filename" id="fileNameInput" placeholder="Název souboru - Po nahrání souboru zvol název nového souboru. " />
+</div>
+
+<script>
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const status = document.getElementById('status');
+const uploadText = document.getElementById('uploadText');
+const fileNameInput = document.getElementById('fileNameInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+
+dropZone.addEventListener('dragover', e=>{
+  e.preventDefault();
+});
+
+dropZone.addEventListener('drop', e=>{
+  e.preventDefault();
+  fileInput.files = e.dataTransfer.files;
+  onFileLoaded();
+});
+
+fileInput.addEventListener('change', onFileLoaded);
+
+function onFileLoaded(){
+  if(!fileInput.files[0]) return;
+
+  dropZone.classList.add('success');
+  uploadText.innerHTML = "✔ Soubor nahrán";
+  status.innerHTML = "Můžeš zpracovat data.";
+  status.classList.add('success');
+
+  // AUTO název souboru
+  fileNameInput.value = fileInput.files[0].name.replace(/\.[^/.]+$/, "");
+}
+
+/* ===== LOGIKA ===== */
+
+function norm(v){
+  return (v||'').toString().trim().toLowerCase();
+}
+
+function score(a,b){
+  let s=0;
+  if(norm(a[1])===norm(b[1]) && norm(a[2])===norm(b[2])) s++;
+  if(norm(a[5]) && norm(a[5])===norm(b[5])) s++;
+  if(norm(a[4]) && norm(a[4])===norm(b[4])) s++;
+  return s;
+}
+
+function find(x,parent){
+  if(parent[x]!==x) parent[x]=find(parent[x],parent);
+  return parent[x];
+}
+
+function union(x,y,parent){
+  let rx=find(x,parent);
+  let ry=find(y,parent);
+  if(rx!==ry) parent[ry]=rx;
+}
+
+function mergeGroups(data){
+  const n=data.length;
+  const parent={};
+
+  for(let i=0;i<n;i++) parent[i]=i;
+
+  for(let i=0;i<n;i++){
+    for(let j=i+1;j<n;j++){
+      if(score(data[i],data[j])>=2){
+        union(i,j,parent);
+      }
+    }
+  }
+
+  const groups={};
+
+  for(let i=0;i<n;i++){
+    let root=find(i,parent);
+    if(!groups[root]) groups[root]=[];
+    groups[root].push(data[i]);
+  }
+
+  const result=[];
+
+  Object.values(groups).forEach(group=>{
+    const merged=[];
+    for(let col=0;col<group[0].length;col++){
+      const set=new Set();
+      group.forEach(row=>{
+        if(row[col]) set.add(row[col]);
+      });
+      merged[col]=Array.from(set).join(', ');
+    }
+    result.push(merged);
+  });
+
+  return result;
+}
+
+function processFile(){
+  const file=fileInput.files[0];
+  if(!file) return alert('Nahraj soubor');
+
+  const reader=new FileReader();
+
+  reader.onload=function(e){
+    let rows=[];
+
+    if(file.name.endsWith('.xlsx')){
+      const wb=XLSX.read(e.target.result,{type:'binary'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      rows=XLSX.utils.sheet_to_json(ws,{header:1});
+    } else {
+      rows=e.target.result.split('\n').map(r=>r.split(/\t|,/));
+    }
+
+    const merged=mergeGroups(rows);
+
+    const ws=XLSX.utils.aoa_to_sheet(merged);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'Výsledek');
+
+    const out=XLSX.write(wb,{bookType:'xlsx',type:'binary'});
+
+    function s2ab(s){
+      const buf=new ArrayBuffer(s.length);
+      const view=new Uint8Array(buf);
+      for(let i=0;i<s.length;i++) view[i]=s.charCodeAt(i)&0xFF;
+      return buf;
+    }
+
+    const blob=new Blob([s2ab(out)],{type:'application/octet-stream'});
+    const url=URL.createObjectURL(blob);
+
+    const link=document.getElementById('downloadLink');
+    const name = fileNameInput.value.trim() || 'vycisteno_fuzzy';
+
+    link.href=url;
+    link.download = name + '.xlsx';
+    link.style.display='inline-block';
+    link.innerText='Stáhnout výsledek ✔';
+  };
+
+  if(file.name.endsWith('.xlsx')) reader.readAsBinaryString(file);
+  else reader.readAsText(file);
+}
+
+</script>
+
+</body>
+</html>
