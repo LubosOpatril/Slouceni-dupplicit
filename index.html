@@ -78,6 +78,7 @@
       margin-top:12px;
       font-size:13px;
       color:#94a3b8;
+      line-height:1.45;
     }
 
     #status.success{
@@ -98,6 +99,7 @@
       border:1px solid rgba(255,255,255,0.2);
       background:#0f172a;
       color:white;
+      box-sizing:border-box;
     }
   </style>
 </head>
@@ -106,7 +108,7 @@
 
 <div class="box">
   <h2>sloučení duplicit</h2>
-  <p>Mazání duplicit + kontrola shodných telefonů a e-mailů mezi různými lidmi</p>
+  <p>Mazání duplicit + kontrola shodných telefonů/e-mailů + přesun podezřelých řádků na ruční kontrolu.</p>
 
   <div class="upload" id="dropZone">
     <p id="uploadText"><b>Klikni nebo přetáhni Excel</b></p>
@@ -132,7 +134,6 @@ const uploadText=document.getElementById('uploadText');
 const fileNameInput=document.getElementById('fileNameInput');
 
 dropZone.onclick=()=>fileInput.click();
-
 dropZone.ondragover=e=>e.preventDefault();
 
 dropZone.ondrop=e=>{
@@ -151,12 +152,22 @@ function onFileLoaded(){
   status.innerHTML="Můžeš zpracovat data.";
   status.className='success';
 
-  fileNameInput.value=fileInput.files[0].name.replace(/\.[^/.]+$/,"");
+  fileNameInput.value=fileInput.files[0].name.replace(/\.[^/.]+$/,'');
 }
 
-/* ===== NORMALIZACE ===== */
+/* ===== ZÁKLADNÍ NORMALIZACE ===== */
 function norm(v){
   return (v||'').toString().trim().toLowerCase();
+}
+
+function removeDiacritics(v){
+  return norm(v)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'');
+}
+
+function compactText(v){
+  return removeDiacritics(v).replace(/[^a-z0-9]/g,'');
 }
 
 function onlyDigits(v){
@@ -165,24 +176,95 @@ function onlyDigits(v){
 
 function normalizePhone(v){
   let d = onlyDigits(v);
-
   if(d.startsWith('420') && d.length === 12) d = d.slice(3);
 
-  // český mobil / telefon musí mít přesně 9 číslic
+  /* chrání před falešnou detekcí dlouhých čísel typu rodné číslo / ID */
   if(d.length !== 9) return '';
 
   return d;
-
 }
 
 function normalizeEmail(v){
   const s = norm(v);
-  return s.includes('@') ? s : '';
+  const match = s.match(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/i);
+  return match ? match[0].toLowerCase() : '';
+}
+
+function emailLocalPart(email){
+  return compactText((email || '').split('@')[0] || '');
 }
 
 /* ===== ODSTRANĚNÍ SLOUPCŮ G A H ===== */
 function removeColumnsGH(rows){
   return rows.map(row => row.filter((_, index) => index !== 6 && index !== 7));
+}
+
+/* ===== HLEDÁNÍ JMÉNA A PŘÍJMENÍ V ŘÁDKU ===== */
+function getPersonFromRow(row){
+  /* podle tvých dat: zdroj je A, jméno B, příjmení C */
+  const firstName = row[1] || '';
+  const lastName = row[2] || '';
+
+  return {
+    firstName,
+    lastName,
+    firstNameClean: compactText(firstName),
+    lastNameClean: compactText(lastName)
+  };
+}
+
+function emailMatchesPerson(email, row){
+  const local = emailLocalPart(email);
+  const p = getPersonFromRow(row);
+
+  if(!local || !p.firstNameClean || !p.lastNameClean) return 0;
+
+  let score = 0;
+
+  if(local.includes(p.firstNameClean)) score += 2;
+  if(local.includes(p.lastNameClean)) score += 2;
+
+  /* varianta prijmenijmeno / jmenoprijmeni */
+  if(local.includes(p.firstNameClean + p.lastNameClean)) score += 2;
+  if(local.includes(p.lastNameClean + p.firstNameClean)) score += 2;
+
+  return score;
+}
+
+function extractEmailsFromRow(row){
+  const emails = [];
+
+  row.forEach((cell, colIndex)=>{
+    const raw = (cell || '').toString();
+    const matches = raw.match(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/ig) || [];
+
+    matches.forEach(email=>{
+      emails.push({
+        email: normalizeEmail(email),
+        colIndex
+      });
+    });
+  });
+
+  return emails.filter(e=>e.email);
+}
+
+function extractPhonesFromRow(row){
+  const phones = [];
+
+  row.forEach((cell, colIndex)=>{
+    const raw = (cell || '').toString();
+    const parts = raw.split(/[,;|\s]+/).map(x=>x.trim()).filter(Boolean);
+
+    parts.forEach(part=>{
+      const phone = normalizePhone(part);
+      if(phone){
+        phones.push({phone, colIndex});
+      }
+    });
+  });
+
+  return phones;
 }
 
 /* ===== SCORE PRO SLOUČENÍ ===== */
@@ -261,39 +343,30 @@ function detectConflicts(rows){
   const conflicts = [];
 
   rows.forEach((row, rowIndex)=>{
-    row.forEach((cell, colIndex)=>{
-      const raw = (cell || '').toString();
+    const emails = extractEmailsFromRow(row);
+    const phones = extractPhonesFromRow(row);
 
-      const parts = raw.split(',').map(x=>x.trim()).filter(Boolean);
+    emails.forEach(item=>{
+      const key = 'EMAIL:' + item.email;
+      if(!valueMap[key]) valueMap[key] = [];
+      valueMap[key].push({
+        rowIndex,
+        colIndex:item.colIndex,
+        value:item.email,
+        type:'EMAIL',
+        rowText: row.join(' | ')
+      });
+    });
 
-      parts.forEach(part=>{
-        let type = '';
-        let value = '';
-
-        const email = normalizeEmail(part);
-        const phone = normalizePhone(part);
-
-        if(email){
-          type = 'EMAIL';
-          value = email;
-        }else if(phone){
-          type = 'TELEFON';
-          value = phone;
-        }
-
-        if(!type || !value) return;
-
-        const key = type + ':' + value;
-
-        if(!valueMap[key]) valueMap[key] = [];
-
-        valueMap[key].push({
-          rowIndex,
-          colIndex,
-          value,
-          type,
-          rowText: row.join(' | ')
-        });
+    phones.forEach(item=>{
+      const key = 'TELEFON:' + item.phone;
+      if(!valueMap[key]) valueMap[key] = [];
+      valueMap[key].push({
+        rowIndex,
+        colIndex:item.colIndex,
+        value:item.phone,
+        type:'TELEFON',
+        rowText: row.join(' | ')
       });
     });
   });
@@ -319,6 +392,83 @@ function detectConflicts(rows){
   return conflicts;
 }
 
+/* ===== CHYTRÁ LOGIKA: EMAIL PODLE JMÉNA ===== */
+function applyEmailOwnershipLogic(rows){
+  const emailMap = {};
+  const manualRows = [];
+  const notesByRow = {};
+  const rowsToRemove = new Set();
+
+  rows.forEach((row, rowIndex)=>{
+    extractEmailsFromRow(row).forEach(item=>{
+      if(!emailMap[item.email]) emailMap[item.email] = [];
+      emailMap[item.email].push({
+        rowIndex,
+        colIndex:item.colIndex,
+        row
+      });
+    });
+  });
+
+  Object.keys(emailMap).forEach(email=>{
+    const items = emailMap[email];
+    const uniqueRowIndexes = [...new Set(items.map(i=>i.rowIndex))];
+
+    if(uniqueRowIndexes.length < 2) return;
+
+    const scored = uniqueRowIndexes.map(rowIndex=>{
+      const row = rows[rowIndex];
+      return {
+        rowIndex,
+        row,
+        score: emailMatchesPerson(email, row),
+        person: getPersonFromRow(row)
+      };
+    });
+
+    const bestScore = Math.max(...scored.map(x=>x.score));
+    const winners = scored.filter(x=>x.score === bestScore && x.score >= 4);
+
+    /* Jen pokud email jasně sedí přes jméno i příjmení pouze jednomu člověku */
+    if(winners.length !== 1) return;
+
+    const owner = winners[0];
+
+    scored.forEach(item=>{
+      if(item.rowIndex === owner.rowIndex) return;
+
+      const loserRow = rows[item.rowIndex];
+      const loserPerson = getPersonFromRow(loserRow);
+      const ownerPerson = getPersonFromRow(owner.row);
+
+      const reason = `E-mail ${email} podle jména v adrese pravděpodobně patří osobě ${ownerPerson.firstName} ${ownerPerson.lastName}, ne osobě ${loserPerson.firstName} ${loserPerson.lastName}.`;
+
+      manualRows.push({
+        reason,
+        action:'Řádek odstraněn z hlavního listu kvůli podezřelému e-mailu patřícímu jiné osobě.',
+        email,
+        wrongName:`${loserPerson.firstName} ${loserPerson.lastName}`.trim(),
+        probableOwner:`${ownerPerson.firstName} ${ownerPerson.lastName}`.trim(),
+        row:[...loserRow]
+      });
+
+      rowsToRemove.add(item.rowIndex);
+
+      if(!notesByRow[item.rowIndex]) notesByRow[item.rowIndex] = [];
+      notesByRow[item.rowIndex].push(reason);
+    });
+  });
+
+  const cleanedRows = rows.filter((_, index)=>!rowsToRemove.has(index));
+
+  return {
+    cleanedRows,
+    manualRows,
+    removedCount: rowsToRemove.size,
+    notesByRow
+  };
+}
+
 /* ===== ŠÍŘKY SLOUPCŮ ===== */
 function setColumnWidths(ws, rows){
   if(!rows.length) return;
@@ -333,7 +483,7 @@ function setColumnWidths(ws, rows){
       if(val > maxLength) maxLength = val;
     });
 
-    return { wch: Math.min(maxLength + 2, 60) };
+    return { wch: Math.min(maxLength + 2, 70) };
   });
 }
 
@@ -344,18 +494,18 @@ function colorWarningRows(ws, rows){
 
     const warningText = row.join(' ').toLowerCase();
 
-    if(warningText.includes('pozor') || warningText.includes('shodný')){
+    if(warningText.includes('pozor') || warningText.includes('shodný') || warningText.includes('kontrola')){
       row.forEach((cell, cIndex)=>{
         const addr = XLSX.utils.encode_cell({r:rIndex,c:cIndex});
 
         if(ws[addr]){
           ws[addr].s = {
             fill: {
-              patternType: "solid",
-              fgColor: { rgb: "FFF2CC" }
+              patternType: 'solid',
+              fgColor: { rgb: 'FFF2CC' }
             },
             font: {
-              color: { rgb: "9C5700" },
+              color: { rgb: '9C5700' },
               bold: true
             }
           };
@@ -363,6 +513,22 @@ function colorWarningRows(ws, rows){
       });
     }
   });
+}
+
+function makeSheet(rows){
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  setColumnWidths(ws, rows);
+
+  if(rows.length && rows[0].length){
+    ws['!autofilter']={ref:XLSX.utils.encode_range({
+      s:{r:0,c:0},
+      e:{r:rows.length-1,c:rows[0].length-1}
+    })};
+
+    ws['!freeze']={xSplit:0,ySplit:1};
+  }
+
+  return ws;
 }
 
 /* ===== PROCESS ===== */
@@ -391,13 +557,18 @@ function processFile(){
       return;
     }
 
-    const header = rows[0];
+    const originalHeader = rows[0];
     const rawData = rows.slice(1);
 
     let mergedData = mergeGroups(rawData);
 
     mergedData.sort((a,b)=>(a[2]||'').localeCompare(b[2]||''));
 
+    /* 1) nejdřív chytrá logika: pokud e-mail sedí na jinou osobu, řádek ven z hlavního listu */
+    const ownershipResult = applyEmailOwnershipLogic(mergedData);
+    mergedData = ownershipResult.cleanedRows;
+
+    /* 2) potom kontrola shod, které po čištění pořád zůstaly */
     const conflicts = detectConflicts(mergedData);
 
     const conflictByRow = {};
@@ -408,7 +579,7 @@ function processFile(){
     });
 
     const finalHeader = [
-      ...header,
+      ...originalHeader,
       'KONTROLA_DUPLICIT',
       'SHODNÉ_HODNOTY'
     ];
@@ -425,11 +596,10 @@ function processFile(){
 
     let finalData = [finalHeader, ...finalRows];
 
-    /* odstranění sloupců G a H z výsledku */
+    /* odstranění sloupců G a H z hlavního výsledku */
     finalData = removeColumnsGH(finalData);
 
     const resultWs = XLSX.utils.aoa_to_sheet(finalData);
-
     colorWarningRows(resultWs, finalData);
     setColumnWidths(resultWs, finalData);
 
@@ -437,12 +607,47 @@ function processFile(){
       s:{r:0,c:0},
       e:{r:finalData.length-1,c:finalData[0].length-1}
     })};
-
     resultWs['!freeze']={xSplit:0,ySplit:1};
 
     const wbOut=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wbOut,resultWs,'Výsledek');
 
+    /* LIST: RUČNÍ KONTROLA */
+    if(ownershipResult.manualRows.length){
+      const manualHeader = [
+        'DŮVOD',
+        'AKCE',
+        'PODEZŘELÝ EMAIL',
+        'ŘÁDEK OSOBY',
+        'PRAVDĚPODOBNÝ MAJITEL EMAILU',
+        ...originalHeader
+      ];
+
+      let manualData = [
+        manualHeader,
+        ...ownershipResult.manualRows.map(item=>[
+          item.reason,
+          item.action,
+          item.email,
+          item.wrongName,
+          item.probableOwner,
+          ...item.row
+        ])
+      ];
+
+      /* i zde odstraníme původní G/H jen z části původních dat, ne z kontrolních sloupců */
+      manualData = manualData.map((row, idx)=>{
+        const fixedPart = row.slice(0,5);
+        const originalPart = row.slice(5).filter((_, index)=>index !== 6 && index !== 7);
+        return [...fixedPart, ...originalPart];
+      });
+
+      const manualWs = makeSheet(manualData);
+      colorWarningRows(manualWs, manualData);
+      XLSX.utils.book_append_sheet(wbOut,manualWs,'Ruční kontrola');
+    }
+
+    /* LIST: KONTROLA DUPLICIT */
     if(conflicts.length){
       const controlRows = [
         ['Typ shody','Hodnota','Řádek ve výsledku','Shoda s řádkem']
@@ -457,14 +662,7 @@ function processFile(){
         ]);
       });
 
-      const controlWs = XLSX.utils.aoa_to_sheet(controlRows);
-      setColumnWidths(controlWs, controlRows);
-
-      controlWs['!autofilter']={ref:XLSX.utils.encode_range({
-        s:{r:0,c:0},
-        e:{r:controlRows.length-1,c:3}
-      })};
-
+      const controlWs = makeSheet(controlRows);
       XLSX.utils.book_append_sheet(wbOut,controlWs,'Kontrola duplicit');
     }
 
@@ -488,19 +686,31 @@ function processFile(){
     link.style.display='inline-block';
     link.innerText='Stáhnout výsledek ✔';
 
+    const messages = [];
+
+    if(ownershipResult.removedCount){
+      messages.push(`🟠 Přesunuto na ruční kontrolu: ${ownershipResult.removedCount} řádků, kde e-mail pravděpodobně patřil jiné osobě.`);
+    }
+
     if(conflicts.length){
-      status.innerHTML=`⚠ Nalezeno ${conflicts.length} podezřelých shod telefonu/e-mailu. V Excelu je list „Kontrola duplicit“.`;
+      messages.push(`⚠ Nalezeno ${conflicts.length} zbývajících shod telefonu/e-mailu. Viz list „Kontrola duplicit“.`);
+    }
+
+    if(messages.length){
+      status.innerHTML = messages.join('<br>');
       status.className='warning';
 
       alert(
-        `POZOR: Nalezeno ${conflicts.length} podezřelých shod telefonu/e-mailu.\n\n` +
-        `Ve staženém Excelu najdeš:\n` +
-        `1) barevně označené podezřelé řádky, pokud to Excel správně načte\n` +
-        `2) sloupce KONTROLA_DUPLICIT a SHODNÉ_HODNOTY\n` +
-        `3) nový list Kontrola duplicit`
+        `Hotovo s kontrolou.\n\n` +
+        `Přesunuto na ruční kontrolu: ${ownershipResult.removedCount} řádků.\n` +
+        `Zbývající shody telefonu/e-mailu: ${conflicts.length}.\n\n` +
+        `Ve staženém Excelu najdeš listy:\n` +
+        `- Výsledek\n` +
+        `${ownershipResult.manualRows.length ? '- Ruční kontrola\n' : ''}` +
+        `${conflicts.length ? '- Kontrola duplicit\n' : ''}`
       );
     }else{
-      status.innerHTML='✔ Hotovo. Nebyly nalezeny žádné shodné telefony/e-maily mezi různými řádky.';
+      status.innerHTML='✔ Hotovo. Nebyly nalezeny žádné podezřelé shody ani řádky k ruční kontrole.';
       status.className='success';
     }
   };
