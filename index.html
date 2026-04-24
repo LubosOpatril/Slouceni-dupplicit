@@ -28,7 +28,6 @@
     }
 
     h2{ margin-top:0; }
-
     p{ color:#cbd5e1; font-size:14px; }
 
     .upload{
@@ -86,6 +85,11 @@
       font-weight:bold;
     }
 
+    #status.warning{
+      color:#facc15;
+      font-weight:bold;
+    }
+
     .filename{
       margin-top:12px;
       width:100%;
@@ -102,7 +106,7 @@
 
 <div class="box">
   <h2>sloučení duplicit</h2>
-  <p>Mazání duplicit</p>
+  <p>Mazání duplicit + kontrola shodných telefonů a e-mailů mezi různými lidmi</p>
 
   <div class="upload" id="dropZone">
     <p id="uploadText"><b>Klikni nebo přetáhni Excel</b></p>
@@ -145,7 +149,7 @@ function onFileLoaded(){
   dropZone.classList.add('success');
   uploadText.innerHTML="✔ Soubor nahrán";
   status.innerHTML="Můžeš zpracovat data.";
-  status.classList.add('success');
+  status.className='success';
 
   fileNameInput.value=fileInput.files[0].name.replace(/\.[^/.]+$/,"");
 }
@@ -155,15 +159,41 @@ function norm(v){
   return (v||'').toString().trim().toLowerCase();
 }
 
-/* ===== SCORE ===== */
+function onlyDigits(v){
+  return (v||'').toString().replace(/\D/g,'');
+}
+
+function normalizePhone(v){
+  let d = onlyDigits(v);
+
+  if(d.startsWith('420') && d.length === 12) d = d.slice(3);
+
+  // český mobil / telefon musí mít přesně 9 číslic
+  if(d.length !== 9) return '';
+
+  return d;
+
+}
+
+function normalizeEmail(v){
+  const s = norm(v);
+  return s.includes('@') ? s : '';
+}
+
+/* ===== ODSTRANĚNÍ SLOUPCŮ G A H ===== */
+function removeColumnsGH(rows){
+  return rows.map(row => row.filter((_, index) => index !== 6 && index !== 7));
+}
+
+/* ===== SCORE PRO SLOUČENÍ ===== */
 function score(a,b){
   let s=0;
 
-  if(norm(a[1])===norm(b[1])) s++;
-  if(norm(a[2])===norm(b[2])) s++;
-  if(norm(a[3])===norm(b[3])) s++;
-  if(norm(a[4])===norm(b[4])) s++;
-  if(norm(a[5])===norm(b[5])) s++;
+  if(norm(a[1])===norm(b[1]) && norm(a[1])!=='') s++;
+  if(norm(a[2])===norm(b[2]) && norm(a[2])!=='') s++;
+  if(norm(a[3])===norm(b[3]) && norm(a[3])!=='') s++;
+  if(norm(a[4])===norm(b[4]) && norm(a[4])!=='') s++;
+  if(norm(a[5])===norm(b[5]) && norm(a[5])!=='') s++;
 
   return s;
 }
@@ -205,15 +235,134 @@ function mergeGroups(data){
 
   Object.values(groups).forEach(g=>{
     const merged=[];
-    for(let c=0;c<g[0].length;c++){
+    const maxCols = Math.max(...g.map(r=>r.length));
+
+    for(let c=0;c<maxCols;c++){
       const set=new Set();
-      g.forEach(r=>{if(r[c])set.add(r[c]);});
+
+      g.forEach(r=>{
+        if(r[c] !== undefined && r[c] !== null && r[c].toString().trim() !== ''){
+          set.add(r[c]);
+        }
+      });
+
       merged[c]=Array.from(set).join(', ');
     }
+
     result.push(merged);
   });
 
   return result;
+}
+
+/* ===== DETEKCE SHOD TELEFONŮ / EMAILŮ ===== */
+function detectConflicts(rows){
+  const valueMap = {};
+  const conflicts = [];
+
+  rows.forEach((row, rowIndex)=>{
+    row.forEach((cell, colIndex)=>{
+      const raw = (cell || '').toString();
+
+      const parts = raw.split(',').map(x=>x.trim()).filter(Boolean);
+
+      parts.forEach(part=>{
+        let type = '';
+        let value = '';
+
+        const email = normalizeEmail(part);
+        const phone = normalizePhone(part);
+
+        if(email){
+          type = 'EMAIL';
+          value = email;
+        }else if(phone){
+          type = 'TELEFON';
+          value = phone;
+        }
+
+        if(!type || !value) return;
+
+        const key = type + ':' + value;
+
+        if(!valueMap[key]) valueMap[key] = [];
+
+        valueMap[key].push({
+          rowIndex,
+          colIndex,
+          value,
+          type,
+          rowText: row.join(' | ')
+        });
+      });
+    });
+  });
+
+  Object.keys(valueMap).forEach(key=>{
+    const items = valueMap[key];
+    const uniqueRows = [...new Set(items.map(i=>i.rowIndex))];
+
+    if(uniqueRows.length > 1){
+      uniqueRows.forEach(rowIndex=>{
+        const related = items.filter(i=>i.rowIndex !== rowIndex);
+
+        conflicts.push({
+          rowIndex,
+          type: items[0].type,
+          value: items[0].value,
+          otherRows: [...new Set(related.map(i=>i.rowIndex + 2))].join(', ')
+        });
+      });
+    }
+  });
+
+  return conflicts;
+}
+
+/* ===== ŠÍŘKY SLOUPCŮ ===== */
+function setColumnWidths(ws, rows){
+  if(!rows.length) return;
+
+  const maxCols = Math.max(...rows.map(r=>r.length));
+
+  ws['!cols'] = Array.from({length:maxCols}).map((_, colIndex)=>{
+    let maxLength = 10;
+
+    rows.forEach(row=>{
+      const val = row[colIndex] ? row[colIndex].toString().length : 0;
+      if(val > maxLength) maxLength = val;
+    });
+
+    return { wch: Math.min(maxLength + 2, 60) };
+  });
+}
+
+/* ===== BARVENÍ ŘÁDKŮ ===== */
+function colorWarningRows(ws, rows){
+  rows.forEach((row, rIndex)=>{
+    if(rIndex === 0) return;
+
+    const warningText = row.join(' ').toLowerCase();
+
+    if(warningText.includes('pozor') || warningText.includes('shodný')){
+      row.forEach((cell, cIndex)=>{
+        const addr = XLSX.utils.encode_cell({r:rIndex,c:cIndex});
+
+        if(ws[addr]){
+          ws[addr].s = {
+            fill: {
+              patternType: "solid",
+              fgColor: { rgb: "FFF2CC" }
+            },
+            font: {
+              color: { rgb: "9C5700" },
+              bold: true
+            }
+          };
+        }
+      });
+    }
+  });
 }
 
 /* ===== PROCESS ===== */
@@ -226,51 +375,104 @@ function processFile(){
   reader.onload=function(e){
     let rows;
 
-    if(file.name.endsWith('.xlsx')){
+    if(/\.(xlsx|xls)$/i.test(file.name)){
       const wb=XLSX.read(e.target.result,{type:'binary'});
       const ws=wb.Sheets[wb.SheetNames[0]];
-      rows=XLSX.utils.sheet_to_json(ws,{header:1});
+      rows=XLSX.utils.sheet_to_json(ws,{header:1, defval:''});
     }else{
-      rows=e.target.result.split('\n').map(r=>r.split(/,|\t/));
+      rows=e.target.result
+        .split(/\r?\n/)
+        .filter(r=>r.trim()!=='')
+        .map(r=>r.split(/,|\t|;/));
     }
 
-    let merged = mergeGroups(rows);
+    if(!rows || rows.length < 2){
+      alert('Soubor neobsahuje dost dat.');
+      return;
+    }
 
-/* oddělení hlavičky */
-const header = merged[0];
-const dataRows = merged.slice(1);
+    const header = rows[0];
+    const rawData = rows.slice(1);
 
-/* řazení pouze dat */
-dataRows.sort((a,b)=>(a[2]||'').localeCompare(b[2]||''));
+    let mergedData = mergeGroups(rawData);
 
-/* vrácení hlavičky nahoru */
-merged = [header, ...dataRows];
+    mergedData.sort((a,b)=>(a[2]||'').localeCompare(b[2]||''));
 
-    const ws=XLSX.utils.aoa_to_sheet(merged);
-ws['!cols'] = merged[0].map((_, colIndex) => {
-  let maxLength = 10;
+    const conflicts = detectConflicts(mergedData);
 
-  merged.forEach(row => {
-    const val = row[colIndex] ? row[colIndex].toString().length : 0;
-    if (val > maxLength) maxLength = val;
-  });
+    const conflictByRow = {};
 
-  return { wch: maxLength + 2 };
-});
+    conflicts.forEach(c=>{
+      if(!conflictByRow[c.rowIndex]) conflictByRow[c.rowIndex] = [];
+      conflictByRow[c.rowIndex].push(`${c.type}: ${c.value} / shoda s řádkem ${c.otherRows}`);
+    });
 
-    /* ===== FILTER ===== */
-    ws['!autofilter']={ref:XLSX.utils.encode_range({
+    const finalHeader = [
+      ...header,
+      'KONTROLA_DUPLICIT',
+      'SHODNÉ_HODNOTY'
+    ];
+
+    const finalRows = mergedData.map((row, index)=>{
+      const warnings = conflictByRow[index] || [];
+
+      return [
+        ...row,
+        warnings.length ? '⚠ POZOR - SHODNÝ TELEFON / EMAIL U JINÉHO ŘÁDKU' : '',
+        warnings.join(' | ')
+      ];
+    });
+
+    let finalData = [finalHeader, ...finalRows];
+
+    /* odstranění sloupců G a H z výsledku */
+    finalData = removeColumnsGH(finalData);
+
+    const resultWs = XLSX.utils.aoa_to_sheet(finalData);
+
+    colorWarningRows(resultWs, finalData);
+    setColumnWidths(resultWs, finalData);
+
+    resultWs['!autofilter']={ref:XLSX.utils.encode_range({
       s:{r:0,c:0},
-      e:{r:merged.length,c:merged[0].length}
+      e:{r:finalData.length-1,c:finalData[0].length-1}
     })};
 
-    /* ===== FREEZE HEADER ===== */
-    ws['!freeze']={xSplit:0,ySplit:1};
+    resultWs['!freeze']={xSplit:0,ySplit:1};
 
-    const wb=XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb,ws,'Výsledek');
+    const wbOut=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wbOut,resultWs,'Výsledek');
 
-    const out=XLSX.write(wb,{bookType:'xlsx',type:'binary'});
+    if(conflicts.length){
+      const controlRows = [
+        ['Typ shody','Hodnota','Řádek ve výsledku','Shoda s řádkem']
+      ];
+
+      conflicts.forEach(c=>{
+        controlRows.push([
+          c.type,
+          c.value,
+          c.rowIndex + 2,
+          c.otherRows
+        ]);
+      });
+
+      const controlWs = XLSX.utils.aoa_to_sheet(controlRows);
+      setColumnWidths(controlWs, controlRows);
+
+      controlWs['!autofilter']={ref:XLSX.utils.encode_range({
+        s:{r:0,c:0},
+        e:{r:controlRows.length-1,c:3}
+      })};
+
+      XLSX.utils.book_append_sheet(wbOut,controlWs,'Kontrola duplicit');
+    }
+
+    const out=XLSX.write(wbOut,{
+      bookType:'xlsx',
+      type:'binary',
+      cellStyles:true
+    });
 
     const blob=new Blob([new Uint8Array([...out].map(c=>c.charCodeAt(0)))],{
       type:'application/octet-stream'
@@ -285,9 +487,25 @@ ws['!cols'] = merged[0].map((_, colIndex) => {
     link.download=name+'.xlsx';
     link.style.display='inline-block';
     link.innerText='Stáhnout výsledek ✔';
+
+    if(conflicts.length){
+      status.innerHTML=`⚠ Nalezeno ${conflicts.length} podezřelých shod telefonu/e-mailu. V Excelu je list „Kontrola duplicit“.`;
+      status.className='warning';
+
+      alert(
+        `POZOR: Nalezeno ${conflicts.length} podezřelých shod telefonu/e-mailu.\n\n` +
+        `Ve staženém Excelu najdeš:\n` +
+        `1) barevně označené podezřelé řádky, pokud to Excel správně načte\n` +
+        `2) sloupce KONTROLA_DUPLICIT a SHODNÉ_HODNOTY\n` +
+        `3) nový list Kontrola duplicit`
+      );
+    }else{
+      status.innerHTML='✔ Hotovo. Nebyly nalezeny žádné shodné telefony/e-maily mezi různými řádky.';
+      status.className='success';
+    }
   };
 
-  if(file.name.endsWith('.xlsx'))
+  if(/\.(xlsx|xls)$/i.test(file.name))
     reader.readAsBinaryString(file);
   else
     reader.readAsText(file);
