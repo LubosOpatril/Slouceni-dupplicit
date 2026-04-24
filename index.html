@@ -39,7 +39,6 @@
       text-align:center;
       background:rgba(255,255,255,0.02);
       cursor:pointer;
-      transition:0.2s;
     }
 
     .upload:hover{
@@ -95,7 +94,6 @@
       border:1px solid rgba(255,255,255,0.2);
       background:#0f172a;
       color:white;
-      outline:none;
     }
   </style>
 </head>
@@ -103,11 +101,11 @@
 <body>
 
 <div class="box">
-  <h2> sloučení duplicit</h2>
+  <h2>sloučení duplicit</h2>
   <p>Mazání duplicit</p>
 
   <div class="upload" id="dropZone">
-    <p id="uploadText"><b>Klikni nebo přetáhni Excel / CSV</b></p>
+    <p id="uploadText"><b>Klikni nebo přetáhni Excel</b></p>
     <p style="font-size:12px;opacity:0.7">Soubor se nahraje automaticky</p>
     <input type="file" id="fileInput" accept=".xlsx,.csv,.txt,.xls">
   </div>
@@ -118,50 +116,46 @@
 
   <a id="downloadLink" style="display:none"></a>
 
-  <!-- NÁZEV SOUBORU -->
-  <input class="filename" id="fileNameInput" placeholder="Název souboru - zvol název po nahrání excelu" />
+  <input class="filename" id="fileNameInput" placeholder="Název souboru" />
 </div>
 
 <script>
 
-const dropZone = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
-const status = document.getElementById('status');
-const uploadText = document.getElementById('uploadText');
-const fileNameInput = document.getElementById('fileNameInput');
+const dropZone=document.getElementById('dropZone');
+const fileInput=document.getElementById('fileInput');
+const status=document.getElementById('status');
+const uploadText=document.getElementById('uploadText');
+const fileNameInput=document.getElementById('fileNameInput');
 
-dropZone.addEventListener('click', () => fileInput.click());
+dropZone.onclick=()=>fileInput.click();
 
-dropZone.addEventListener('dragover', e=>{
+dropZone.ondragover=e=>e.preventDefault();
+
+dropZone.ondrop=e=>{
   e.preventDefault();
-});
-
-dropZone.addEventListener('drop', e=>{
-  e.preventDefault();
-  fileInput.files = e.dataTransfer.files;
+  fileInput.files=e.dataTransfer.files;
   onFileLoaded();
-});
+};
 
-fileInput.addEventListener('change', onFileLoaded);
+fileInput.onchange=onFileLoaded;
 
 function onFileLoaded(){
-  if(!fileInput.files[0]) return;
+  if(!fileInput.files[0])return;
 
   dropZone.classList.add('success');
-  uploadText.innerHTML = "✔ Soubor nahrán";
-  status.innerHTML = "Můžeš zpracovat data.";
+  uploadText.innerHTML="✔ Soubor nahrán";
+  status.innerHTML="Můžeš zpracovat data.";
   status.classList.add('success');
 
-  // AUTO název souboru
-  fileNameInput.value = fileInput.files[0].name.replace(/\.[^/.]+$/, "");
+  fileNameInput.value=fileInput.files[0].name.replace(/\.[^/.]+$/,"");
 }
 
-/* ===== LOGIKA ===== */
-
+/* ===== NORMALIZACE ===== */
 function norm(v){
   return (v||'').toString().trim().toLowerCase();
 }
 
+/* ===== SCORE ===== */
 function score(a,b){
   let s=0;
 
@@ -174,28 +168,27 @@ function score(a,b){
   return s;
 }
 
-
-function find(x,parent){
-  if(parent[x]!==x) parent[x]=find(parent[x],parent);
-  return parent[x];
+/* ===== GROUPING ===== */
+function find(x,p){
+  if(p[x]!==x)p[x]=find(p[x],p);
+  return p[x];
 }
 
-function union(x,y,parent){
-  let rx=find(x,parent);
-  let ry=find(y,parent);
-  if(rx!==ry) parent[ry]=rx;
+function union(x,y,p){
+  let rx=find(x,p), ry=find(y,p);
+  if(rx!==ry)p[ry]=rx;
 }
 
 function mergeGroups(data){
   const n=data.length;
-  const parent={};
+  const p={};
 
-  for(let i=0;i<n;i++) parent[i]=i;
+  for(let i=0;i<n;i++)p[i]=i;
 
   for(let i=0;i<n;i++){
     for(let j=i+1;j<n;j++){
       if(score(data[i],data[j])>=3){
-        union(i,j,parent);
+        union(i,j,p);
       }
     }
   }
@@ -203,21 +196,19 @@ function mergeGroups(data){
   const groups={};
 
   for(let i=0;i<n;i++){
-    let root=find(i,parent);
-    if(!groups[root]) groups[root]=[];
-    groups[root].push(data[i]);
+    let r=find(i,p);
+    if(!groups[r])groups[r]=[];
+    groups[r].push(data[i]);
   }
 
   const result=[];
 
-  Object.values(groups).forEach(group=>{
+  Object.values(groups).forEach(g=>{
     const merged=[];
-    for(let col=0;col<group[0].length;col++){
+    for(let c=0;c<g[0].length;c++){
       const set=new Set();
-      group.forEach(row=>{
-        if(row[col]) set.add(row[col]);
-      });
-      merged[col]=Array.from(set).join(', ');
+      g.forEach(r=>{if(r[c])set.add(r[c]);});
+      merged[c]=Array.from(set).join(', ');
     }
     result.push(merged);
   });
@@ -225,52 +216,81 @@ function mergeGroups(data){
   return result;
 }
 
+/* ===== PROCESS ===== */
 function processFile(){
   const file=fileInput.files[0];
-  if(!file) return alert('Nahraj soubor');
+  if(!file)return alert('Nahraj soubor');
 
   const reader=new FileReader();
 
   reader.onload=function(e){
-    let rows=[];
+    let rows;
 
     if(file.name.endsWith('.xlsx')){
       const wb=XLSX.read(e.target.result,{type:'binary'});
       const ws=wb.Sheets[wb.SheetNames[0]];
       rows=XLSX.utils.sheet_to_json(ws,{header:1});
-    } else {
-      rows=e.target.result.split('\n').map(r=>r.split(/\t|,/));
+    }else{
+      rows=e.target.result.split('\n').map(r=>r.split(/,|\t/));
     }
 
-    const merged=mergeGroups(rows);
+    let merged = mergeGroups(rows);
+
+/* oddělení hlavičky */
+const header = merged[0];
+const dataRows = merged.slice(1);
+
+/* řazení pouze dat */
+dataRows.sort((a,b)=>(a[2]||'').localeCompare(b[2]||''));
+
+/* vrácení hlavičky nahoru */
+merged = [header, ...dataRows];
 
     const ws=XLSX.utils.aoa_to_sheet(merged);
+ws['!cols'] = merged[0].map((_, colIndex) => {
+  let maxLength = 10;
+
+  merged.forEach(row => {
+    const val = row[colIndex] ? row[colIndex].toString().length : 0;
+    if (val > maxLength) maxLength = val;
+  });
+
+  return { wch: maxLength + 2 };
+});
+
+    /* ===== FILTER ===== */
+    ws['!autofilter']={ref:XLSX.utils.encode_range({
+      s:{r:0,c:0},
+      e:{r:merged.length,c:merged[0].length}
+    })};
+
+    /* ===== FREEZE HEADER ===== */
+    ws['!freeze']={xSplit:0,ySplit:1};
+
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws,'Výsledek');
 
     const out=XLSX.write(wb,{bookType:'xlsx',type:'binary'});
 
-    function s2ab(s){
-      const buf=new ArrayBuffer(s.length);
-      const view=new Uint8Array(buf);
-      for(let i=0;i<s.length;i++) view[i]=s.charCodeAt(i)&0xFF;
-      return buf;
-    }
+    const blob=new Blob([new Uint8Array([...out].map(c=>c.charCodeAt(0)))],{
+      type:'application/octet-stream'
+    });
 
-    const blob=new Blob([s2ab(out)],{type:'application/octet-stream'});
     const url=URL.createObjectURL(blob);
 
     const link=document.getElementById('downloadLink');
-    const name = fileNameInput.value.trim() || 'vycisteno_123';
+    const name=fileNameInput.value.trim()||'vycisteno';
 
     link.href=url;
-    link.download = name + '.xlsx';
+    link.download=name+'.xlsx';
     link.style.display='inline-block';
     link.innerText='Stáhnout výsledek ✔';
   };
 
-  if(file.name.endsWith('.xlsx')) reader.readAsBinaryString(file);
-  else reader.readAsText(file);
+  if(file.name.endsWith('.xlsx'))
+    reader.readAsBinaryString(file);
+  else
+    reader.readAsText(file);
 }
 
 </script>
