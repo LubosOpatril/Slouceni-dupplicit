@@ -329,9 +329,9 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
 
   if(columns && columns.birthNumber !== null && columns.birthNumber !== undefined){
     priorityCells.push(row[columns.birthNumber]);
+  }else{
+    priorityCells = priorityCells.concat([row[3], row[2], row[4]]);
   }
-
-  priorityCells = priorityCells.concat([row[3], row[2], row[4]]);
 
   priorityCells.forEach(function(cell){
     const raw = (cell || "").toString();
@@ -495,16 +495,35 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     };
   }
 
+  function profilesHaveFullName(a,b){
+    return a.firstNameClean && b.firstNameClean && a.lastNameClean && b.lastNameClean;
+  }
+
   function scoreRowProfiles(a,b){
-    let s = 0;
+    const sameBirthNumber = hasAnyOverlap(a.birthNumbers, b.birthNumbers);
+    const samePhone = hasAnyOverlap(a.phones, b.phones);
+    const sameEmail = hasAnyOverlap(a.emails, b.emails);
+    const sameFirstName = a.firstNameClean && a.firstNameClean === b.firstNameClean;
+    const sameLastName = a.lastNameClean && a.lastNameClean === b.lastNameClean;
+    const sameFullName = sameFirstName && sameLastName;
 
-    if(a.firstNameClean && a.firstNameClean === b.firstNameClean) s++;
-    if(a.lastNameClean && a.lastNameClean === b.lastNameClean) s++;
-    if(hasAnyOverlap(a.birthNumbers, b.birthNumbers)) s += 2;
-    if(hasAnyOverlap(a.phones, b.phones)) s += 2;
-    if(hasAnyOverlap(a.emails, b.emails)) s += 2;
+    if(sameBirthNumber){
+      return 4;
+    }
 
-    return s;
+    if(a.birthNumbers.length && b.birthNumbers.length){
+      return 0;
+    }
+
+    if(profilesHaveFullName(a,b) && !sameFullName){
+      return 0;
+    }
+
+    if(sameFullName && (samePhone || sameEmail)){
+      return 4;
+    }
+
+    return 0;
   }
 
   function findParent(x,p){
@@ -527,9 +546,7 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
   function mergeGroups(data, columns){
     const n = data.length;
     const parent = {};
-    const profiles = columns && columns.hasHeader
-      ? data.map(row => makeRowProfile(row, columns))
-      : null;
+    const profiles = data.map(row => makeRowProfile(row, columns));
 
     for(let i=0;i<n;i++){
       parent[i] = i;
@@ -537,9 +554,7 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
 
     for(let i=0;i<n;i++){
       for(let j=i+1;j<n;j++){
-        const score = profiles
-          ? scoreRowProfiles(profiles[i],profiles[j])
-          : scoreRows(data[i],data[j],columns);
+        const score = scoreRowProfiles(profiles[i],profiles[j]);
 
         if(score >= 3){
           unionRows(i,j,parent);
