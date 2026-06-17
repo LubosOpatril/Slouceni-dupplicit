@@ -181,6 +181,76 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     return removeDiacritics(v).replace(/[^a-z0-9]/g, "");
   }
 
+  function headerKey(v){
+    return compactText(v);
+  }
+
+  function firstMatchingHeader(header, names){
+    const wanted = names.map(headerKey);
+
+    for(let i=0;i<header.length;i++){
+      const key = headerKey(header[i]);
+
+      if(wanted.includes(key)){
+        return i;
+      }
+    }
+
+    return null;
+  }
+
+  function buildColumnMap(header, hasHeader){
+    const map = {
+      hasHeader,
+      firstName:1,
+      lastName:2,
+      birthNumber:3,
+      phone:4,
+      email:null
+    };
+
+    if(!hasHeader){
+      return map;
+    }
+
+    const firstName = firstMatchingHeader(header, ["jmeno","jmĂ©no","krestni jmeno","krestni jmĂ©no","name"]);
+    const lastName = firstMatchingHeader(header, ["prijmeni","pĹ™Ă­jmenĂ­","surname","lastname"]);
+    const birthNumber = firstMatchingHeader(header, ["rodne cislo","rodnĂ© ÄŤĂ­slo","rc","r c","birth number"]);
+    const phone = firstMatchingHeader(header, ["telefon","tel","mobil","mobile","phone"]);
+    const email = firstMatchingHeader(header, ["email","e-mail","mail"]);
+
+    if(firstName !== null) map.firstName = firstName;
+    if(lastName !== null) map.lastName = lastName;
+    if(birthNumber !== null) map.birthNumber = birthNumber;
+    if(phone !== null) map.phone = phone;
+    if(email !== null) map.email = email;
+
+    return map;
+  }
+
+  function cellByColumn(row, columns, name){
+    if(!columns || columns[name] === null || columns[name] === undefined){
+      return "";
+    }
+
+    return row[columns[name]];
+  }
+
+  function splitUniqueValues(v){
+    return Array.from(new Set(
+      (v || "")
+        .toString()
+        .split(/\s*,\s*/)
+        .map(x => x.trim())
+        .filter(Boolean)
+    ));
+  }
+
+  function hasAnyOverlap(a,b){
+    const set = new Set(a.filter(Boolean));
+    return b.some(x => set.has(x));
+  }
+
   function onlyDigits(v){
     return (v || "").toString().replace(/\D/g, "");
   }
@@ -226,7 +296,13 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
 
     row.forEach(function(cell, colIndex){
       const raw = (cell || "").toString();
-      const parts = raw.split(/[,;|\s]+/).map(x => x.trim()).filter(Boolean);
+      const wholeCellPhone = normalizePhone(raw);
+
+      if(wholeCellPhone){
+        out.push({phone: wholeCellPhone, colIndex});
+      }
+
+      const parts = raw.split(/[,;|]+/).map(x => x.trim()).filter(Boolean);
 
       parts.forEach(function(part){
         const phone = normalizePhone(part);
@@ -239,12 +315,18 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     return out;
   }
 
- function extractBirthNumberFromRow(row){
+ function extractBirthNumberFromRow(row, columns){
   const found = [];
 
   // Priorita: ve tvých datech bývá rodné číslo většinou ve sloupci C/D podle posunu,
   // po zdroji, jménu a příjmení = index 3
-  const priorityCells = [row[3], row[2], row[4]];
+  let priorityCells = [];
+
+  if(columns && columns.birthNumber !== null && columns.birthNumber !== undefined){
+    priorityCells.push(row[columns.birthNumber]);
+  }
+
+  priorityCells = priorityCells.concat([row[3], row[2], row[4]]);
 
   priorityCells.forEach(function(cell){
     const raw = (cell || "").toString();
@@ -290,9 +372,9 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     return (v || "").toString().replace(/\s+/g, " ").trim();
   }
 
-  function detectNameAndSurname(row){
-    const first = cleanPersonText(row[1]);
-    const last = cleanPersonText(row[2]);
+  function detectNameAndSurname(row, columns){
+    const first = cleanPersonText(cellByColumn(row, columns, "firstName") || row[1]);
+    const last = cleanPersonText(cellByColumn(row, columns, "lastName") || row[2]);
 
     if(isNameLikeCell(first) && isNameLikeCell(last)){
       return {firstName:first, lastName:last};
@@ -320,8 +402,8 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     return compactText((email || "").split("@")[0] || "");
   }
 
-  function getPersonFromRow(row){
-    const p = detectNameAndSurname(row);
+  function getPersonFromRow(row, columns){
+    const p = detectNameAndSurname(row, columns);
 
     return {
       firstName:p.firstName,
@@ -331,9 +413,9 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     };
   }
 
-  function emailMatchesPerson(email,row){
+  function emailMatchesPerson(email,row,columns){
     const local = emailLocalPart(email);
-    const p = getPersonFromRow(row);
+    const p = getPersonFromRow(row, columns);
 
     if(!local || !p.firstNameClean || !p.lastNameClean) return 0;
 
@@ -362,8 +444,30 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     return (hasEmail || hasPhone || hasRc) && !looksLikeHeader;
   }
 
-  function scoreRows(a,b){
+  function scoreRows(a,b,columns){
     let s = 0;
+
+    if(columns && columns.hasHeader){
+      const personA = getPersonFromRow(a, columns);
+      const personB = getPersonFromRow(b, columns);
+
+      if(personA.firstNameClean && personA.firstNameClean === personB.firstNameClean) s++;
+      if(personA.lastNameClean && personA.lastNameClean === personB.lastNameClean) s++;
+
+      const rcA = splitUniqueValues(extractBirthNumberFromRow(a, columns));
+      const rcB = splitUniqueValues(extractBirthNumberFromRow(b, columns));
+      if(hasAnyOverlap(rcA, rcB)) s += 2;
+
+      const phonesA = extractPhonesFromRow(a).map(x => x.phone);
+      const phonesB = extractPhonesFromRow(b).map(x => x.phone);
+      if(hasAnyOverlap(phonesA, phonesB)) s += 2;
+
+      const emailsA = extractEmailsFromRow(a).map(x => x.email);
+      const emailsB = extractEmailsFromRow(b).map(x => x.email);
+      if(hasAnyOverlap(emailsA, emailsB)) s += 2;
+
+      return s;
+    }
 
     for(let i = 1; i <= 5; i++){
       if(norm(a[i]) && norm(a[i]) === norm(b[i])){
@@ -391,7 +495,7 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     }
   }
 
-  function mergeGroups(data){
+  function mergeGroups(data, columns){
     const n = data.length;
     const parent = {};
 
@@ -401,7 +505,7 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
 
     for(let i=0;i<n;i++){
       for(let j=i+1;j<n;j++){
-        if(scoreRows(data[i],data[j]) >= 3){
+        if(scoreRows(data[i],data[j],columns) >= 3){
           unionRows(i,j,parent);
         }
       }
@@ -480,7 +584,7 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     return conflicts;
   }
 
-  function findEmailOwnershipIssues(rows){
+  function findEmailOwnershipIssues(rows, columns){
     const emailMap = {};
     const manualRows = [];
     const notesByRow = {};
@@ -502,8 +606,8 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
         return {
           rowIndex,
           row:rows[rowIndex],
-          score:emailMatchesPerson(email,rows[rowIndex]),
-          person:getPersonFromRow(rows[rowIndex])
+          score:emailMatchesPerson(email,rows[rowIndex],columns),
+          person:getPersonFromRow(rows[rowIndex],columns)
         };
       });
 
@@ -541,27 +645,29 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     return {manualRows,notesByRow};
   }
 
-function makeContactsExportRows(rows){
+function makeContactsExportRows(rows, columns){
   const out = [];
 
   // první řádek schválně prázdný kvůli filtru
   out.push(["","","",""]);
 
   rows.forEach(function(row){
-    const person = detectNameAndSurname(row);
+    const person = detectNameAndSurname(row, columns);
 
     const fullName = [person.firstName, person.lastName]
       .filter(Boolean)
       .join(" ")
       .trim();
 
-    const rc = extractBirthNumberFromRow(row);
+    const rc = extractBirthNumberFromRow(row, columns);
 
     // Telefon bereme prioritně ze sloupce telefonu, ve tvých datech většinou index 4
     let phones = [];
 
-    if(row[4]){
-      const phone = normalizePhone(row[4]);
+    const phoneCell = cellByColumn(row, columns, "phone") || row[4];
+
+    if(phoneCell){
+      const phone = normalizePhone(phoneCell);
       if(phone) phones.push(phone);
     }
 
@@ -709,17 +815,25 @@ function toCsv(rows){
         }
 
         const maxCols = Math.max(...rows.map(r => r.length));
-        const emptyHeader = Array(maxCols).fill("");
+        const hasHeader = !rowLooksLikeData(rows[0]);
+        const sourceHeader = hasHeader ? rows[0].slice() : Array(maxCols).fill("");
 
-        const rawData = rowLooksLikeData(rows[0]) ? rows : rows.slice(1);
+        while(sourceHeader.length < maxCols){
+          sourceHeader.push("");
+        }
 
-        let mergedData = mergeGroups(rawData);
+        const columns = buildColumnMap(sourceHeader, hasHeader);
+        const rawData = hasHeader ? rows.slice(1) : rows;
+
+        let mergedData = mergeGroups(rawData, columns);
 
         mergedData.sort(function(a,b){
-          return (a[2] || "").localeCompare(b[2] || "");
+          const av = cellByColumn(a, columns, "lastName") || a[2] || "";
+          const bv = cellByColumn(b, columns, "lastName") || b[2] || "";
+          return av.localeCompare(bv);
         });
 
-        const ownership = findEmailOwnershipIssues(mergedData);
+        const ownership = findEmailOwnershipIssues(mergedData, columns);
         const conflicts = detectConflicts(mergedData);
 
         const conflictByRow = {};
@@ -730,7 +844,7 @@ function toCsv(rows){
         });
 
         const finalHeader = [
-          ...emptyHeader,
+          ...sourceHeader,
           "KONTROLA_DUPLICIT",
           "SHODNÉ_HODNOTY",
           "RUČNÍ_KONTROLA"
@@ -754,12 +868,12 @@ function toCsv(rows){
 
         XLSX.utils.book_append_sheet(wbOut,makeSheet(finalData,true),"Výsledek");
 
-        const exportContacts = makeContactsExportRows(mergedData);
+        const exportContacts = makeContactsExportRows(mergedData, columns);
         XLSX.utils.book_append_sheet(wbOut,makeSheet(exportContacts,false),"Export kontaktů");
 
         if(ownership.manualRows.length){
           const manualData = [
-            ["DŮVOD","PODEZŘELÝ EMAIL","ŘÁDEK OSOBY","PRAVDĚPODOBNÝ MAJITEL EMAILU","ŘÁDEK VE VÝSLEDKU",...emptyHeader],
+            ["DŮVOD","PODEZŘELÝ EMAIL","ŘÁDEK OSOBY","PRAVDĚPODOBNÝ MAJITEL EMAILU","ŘÁDEK VE VÝSLEDKU",...sourceHeader],
             ...ownership.manualRows.map(function(item){
               return [
                 item.reason,
