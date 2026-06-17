@@ -169,6 +169,11 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     fileNameInput.value = fileInput.files[0].name.replace(/\.[^/.]+$/, "");
   }
 
+  function setProcessing(isProcessing){
+    processBtn.disabled = isProcessing;
+    processBtn.innerText = isProcessing ? "Zpracovávám..." : "Zpracovat Excel";
+  }
+
   function norm(v){
     return (v || "").toString().trim().toLowerCase();
   }
@@ -478,6 +483,30 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
     return s;
   }
 
+  function makeRowProfile(row, columns){
+    const person = getPersonFromRow(row, columns);
+
+    return {
+      firstNameClean:person.firstNameClean,
+      lastNameClean:person.lastNameClean,
+      birthNumbers:splitUniqueValues(extractBirthNumberFromRow(row, columns)),
+      phones:extractPhonesFromRow(row).map(x => x.phone),
+      emails:extractEmailsFromRow(row).map(x => x.email)
+    };
+  }
+
+  function scoreRowProfiles(a,b){
+    let s = 0;
+
+    if(a.firstNameClean && a.firstNameClean === b.firstNameClean) s++;
+    if(a.lastNameClean && a.lastNameClean === b.lastNameClean) s++;
+    if(hasAnyOverlap(a.birthNumbers, b.birthNumbers)) s += 2;
+    if(hasAnyOverlap(a.phones, b.phones)) s += 2;
+    if(hasAnyOverlap(a.emails, b.emails)) s += 2;
+
+    return s;
+  }
+
   function findParent(x,p){
     if(p[x] !== x){
       p[x] = findParent(p[x],p);
@@ -498,6 +527,9 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
   function mergeGroups(data, columns){
     const n = data.length;
     const parent = {};
+    const profiles = columns && columns.hasHeader
+      ? data.map(row => makeRowProfile(row, columns))
+      : null;
 
     for(let i=0;i<n;i++){
       parent[i] = i;
@@ -505,7 +537,11 @@ const csvDownloadLink = document.getElementById("csvDownloadLink");
 
     for(let i=0;i<n;i++){
       for(let j=i+1;j<n;j++){
-        if(scoreRows(data[i],data[j],columns) >= 3){
+        const score = profiles
+          ? scoreRowProfiles(profiles[i],profiles[j])
+          : scoreRows(data[i],data[j],columns);
+
+        if(score >= 3){
           unionRows(i,j,parent);
         }
       }
@@ -765,6 +801,12 @@ function makeContactsExportRows(rows, columns){
       return;
     }
 
+    setProcessing(true);
+    status.innerHTML = "Zpracovávám soubor, počkej prosím...";
+    status.className = "warning";
+    downloadLink.style.display = "none";
+    csvDownloadLink.style.display = "none";
+
 function toCsv(rows){
   return rows.map(row => {
     return row.map(cell => {
@@ -776,6 +818,7 @@ function toCsv(rows){
 }
 
     if(typeof XLSX === "undefined"){
+      setProcessing(false);
       alert("Nenačetla se knihovna pro Excel. Zkontroluj internet.");
       return;
     }
@@ -810,6 +853,7 @@ function toCsv(rows){
         }
 
         if(!rows || rows.length < 1){
+          setProcessing(false);
           alert("Soubor neobsahuje data.");
           return;
         }
@@ -945,11 +989,14 @@ csvDownloadLink.innerText = "Stáhnout Export kontaktů CSV";
           status.className = "success";
         }
 
+        setProcessing(false);
+
       }catch(err){
         console.error(err);
         alert("Nastala chyba při zpracování. Otevři konzoli a pošli mi chybu.");
         status.innerHTML = "Chyba: " + err.message;
         status.className = "warning";
+        setProcessing(false);
       }
     };
 
